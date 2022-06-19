@@ -15,8 +15,18 @@ fn create_display(
     glow::Context,
 ) {
     crate::profile_function!();
+
+    use crate::HardwareAcceleration;
+
+    let hardware_acceleration = match native_options.hardware_acceleration {
+        HardwareAcceleration::Required => Some(true),
+        HardwareAcceleration::Preferred => None,
+        HardwareAcceleration::Off => Some(false),
+    };
+
     let gl_window = unsafe {
         glutin::ContextBuilder::new()
+            .with_hardware_acceleration(hardware_acceleration)
             .with_depth_buffer(native_options.depth_buffer)
             .with_multisampling(native_options.multisampling)
             .with_srgb(true)
@@ -56,13 +66,19 @@ pub fn run_glow(
     let mut painter = egui_glow::Painter::new(gl.clone(), None, "")
         .unwrap_or_else(|error| panic!("some OpenGL error occurred {}\n", error));
 
+    let system_theme = native_options.system_theme();
     let mut integration = epi_integration::EpiIntegration::new(
         &event_loop,
         painter.max_texture_side(),
         gl_window.window(),
+        system_theme,
         storage,
         Some(gl.clone()),
+        #[cfg(feature = "wgpu")]
+        None,
     );
+    let theme = system_theme.unwrap_or(native_options.default_theme);
+    integration.egui_ctx.set_visuals(theme.egui_visuals());
 
     {
         let event_loop_proxy = egui::mutex::Mutex::new(event_loop.create_proxy());
@@ -76,6 +92,8 @@ pub fn run_glow(
         integration_info: integration.frame.info(),
         storage: integration.frame.storage(),
         gl: Some(gl.clone()),
+        #[cfg(feature = "wgpu")]
+        render_state: None,
     });
 
     if app.warm_up_enabled() {
@@ -120,6 +138,8 @@ pub fn run_glow(
                 &clipped_primitives,
                 &textures_delta,
             );
+
+            integration.post_rendering(app.as_mut(), window);
 
             {
                 crate::profile_scope!("swap_buffers");
@@ -171,7 +191,7 @@ pub fn run_glow(
                     winit::event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                         gl_window.resize(**new_inner_size);
                     }
-                    winit::event::WindowEvent::CloseRequested => {
+                    winit::event::WindowEvent::CloseRequested if integration.should_quit() => {
                         *control_flow = winit::event_loop::ControlFlow::Exit;
                     }
                     _ => {}
@@ -230,14 +250,21 @@ pub fn run_wgpu(
         painter
     };
 
+    let render_state = painter.get_render_state().expect("Uninitialized");
+
+    let system_theme = native_options.system_theme();
     let mut integration = epi_integration::EpiIntegration::new(
         &event_loop,
         painter.max_texture_side().unwrap_or(2048),
         &window,
+        system_theme,
         storage,
         #[cfg(feature = "glow")]
         None,
+        Some(render_state.clone()),
     );
+    let theme = system_theme.unwrap_or(native_options.default_theme);
+    integration.egui_ctx.set_visuals(theme.egui_visuals());
 
     {
         let event_loop_proxy = egui::mutex::Mutex::new(event_loop.create_proxy());
@@ -252,6 +279,7 @@ pub fn run_wgpu(
         storage: integration.frame.storage(),
         #[cfg(feature = "glow")]
         gl: None,
+        render_state: Some(render_state),
     });
 
     if app.warm_up_enabled() {
@@ -343,7 +371,7 @@ pub fn run_wgpu(
                     winit::event::WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                         painter.on_window_resized(new_inner_size.width, new_inner_size.height);
                     }
-                    winit::event::WindowEvent::CloseRequested => {
+                    winit::event::WindowEvent::CloseRequested if integration.should_quit() => {
                         *control_flow = winit::event_loop::ControlFlow::Exit;
                     }
                     _ => {}
