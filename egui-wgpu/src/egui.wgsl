@@ -38,7 +38,7 @@ fn position_from_screen(screen_pos: vec2<f32>) -> vec4<f32> {
     );
 }
 
-[[stage(vertex)]]
+@vertex
 fn vs_main(
     @location(0) a_pos: vec2<f32>,
     @location(1) a_tex_coord: vec2<f32>,
